@@ -12,6 +12,9 @@ jobs:
         with:
           python-version: '3.10'
       - run: pip install websockets
+      - name: Install libs
+        run: pip install requests pandas
+
       - run: python snapshot_once.py
       - run: |
           git config --global user.name  "bot"
