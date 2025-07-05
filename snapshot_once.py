@@ -1,20 +1,32 @@
-# --- snapshot_once.py ----------------------------------
-# Grab ONE depth snapshot from each exchange, bucket, write CSV, exit.
-import json, asyncio, csv, websockets, math
-PAIR = {"binance":"btcusdt","coinbase":"BTC-USD","kraken":"XBT/USD","bitfinex":"tBTCUSD"}
-BIN  = 10
-out  = "agg_snapshot.csv"
-async def binance():
-    url=f"wss://stream.binance.com:9443/ws/{PAIR['binance']}@depth20@100ms"
-    async with websockets.connect(url) as ws:
-        data=json.loads(await ws.recv())
-        return [(float(p),float(q)) for p,q in data["bids"]],[(float(p),float(q)) for p,q in data["asks"]]
-async def main():
-    bids,asks=await binance()   # demo single exchange; expand like before
-    buckets={}
-    for p,q in bids: buckets.setdefault(math.floor(p/BIN)*BIN,[0,0])[0]+=q
-    for p,q in asks:buckets.setdefault(math.floor(p/BIN)*BIN,[0,0])[1]+=q
-    with open(out,"w",newline="") as f:
-        w=csv.writer(f);w.writerow(["price","buy_qty","sell_qty"])
-        for k in sorted(buckets):w.writerow([k,*buckets[k]])
-asyncio.run(main())
+# snapshot_once.py  – one-shot REST depth -> CSV
+# ------------------------------------------------
+import csv, requests, math
+
+PAIR      = "BTCUSDT"
+BIN_SIZE  = 10             # dollars per bucket
+OUTFILE   = "agg_snapshot.csv"
+
+# 1) grab top 1000 bids/asks (free, no key needed)
+url  = "https://api.binance.com/api/v3/depth"
+resp = requests.get(url, params={"symbol": PAIR, "limit": 1000}, timeout=10)
+resp.raise_for_status()
+data = resp.json()
+
+# 2) bucket
+buckets = {}                       # price bucket -> [buyQty, sellQty]
+for p, q in data["bids"]:
+    b = BIN_SIZE * round(float(p) / BIN_SIZE)
+    buckets.setdefault(b, [0, 0])[0] += float(q)
+
+for p, q in data["asks"]:
+    b = BIN_SIZE * round(float(p) / BIN_SIZE)
+    buckets.setdefault(b, [0, 0])[1] += float(q)
+
+# 3) write csv
+with open(OUTFILE, "w", newline="") as f:
+    w = csv.writer(f)
+    w.writerow(["price", "buy_qty", "sell_qty"])
+    for b in sorted(buckets):
+        w.writerow([b, *buckets[b]])
+
+print("✔ wrote", OUTFILE)
