@@ -1,13 +1,16 @@
 name: snapshot-once
 on:
-  schedule: [ { cron:  '*/5 * * * *' } ]   # every 5 min
+  workflow_dispatch:    
+  schedule:
+    - cron: '*/5 * * * *'
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: '3.10' }
+        with:
+          python-version: '3.10'
       - run: pip install websockets
       - run: python snapshot_once.py
       - run: |
