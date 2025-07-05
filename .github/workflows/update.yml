@@ -1,9 +1,9 @@
 name: snapshot-once
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:    # manual button
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/5 * * * *'  # every 5 minutes
 
 jobs:
   update:
@@ -11,13 +11,15 @@ jobs:
     timeout-minutes: 4
 
     steps:
-      # 1) Checkout your repo (no need to persist here)
-      - uses: actions/checkout@v4
+      # 1) Checkout using GITHUB_TOKEN for push
+      - name: Checkout repository
+        uses: actions/checkout@v3
         with:
-          persist-credentials: false
+          persist-credentials: true   # this tells checkout to configure git with GITHUB_TOKEN
 
-      # 2) Setup Python
-      - uses: actions/setup-python@v5
+      # 2) Set up Python
+      - name: Setup Python 3.10
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
@@ -25,26 +27,21 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      # 4) Run the snapshot script
-      - name: Generate agg_snapshot.csv
+      # 4) Generate the CSV
+      - name: Run snapshot_once.py
         run: python snapshot_once.py
 
-      # 5) Commit & push using the GITHUB_TOKEN in the URL
-      - name: Commit and push CSV
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # 5) Commit & push the CSV if it changed
+      - name: Commit & push agg_snapshot.csv
         run: |
-          git config --global user.name  "snapshot-bot"
-          git config --global user.email "bot@example.com"
-
-          # only commit if the CSV changed
-          if git status --porcelain agg_snapshot.csv | grep .; then
+          # configure commit user
+          git config user.name "snapshot-bot"
+          git config user.email "bot@example.com"
+          # only commit if there are changes
+          if git diff --quiet; then
+            echo "No changes to commit"
+          else
             git add agg_snapshot.csv
             git commit -m "auto snapshot $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-            # push explicitly with token auth
-            git push \
-              https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git \
-              HEAD:main
-          else
-            echo "No changes to commit"
+            git push
           fi
