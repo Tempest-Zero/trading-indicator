@@ -1,9 +1,9 @@
 name: snapshot-once
 
 on:
-  workflow_dispatch:    # manual button
+  workflow_dispatch:
   schedule:
-    - cron: '*/5 * * * *'  # every 5 minutes
+    - cron: '*/5 * * * *'
 
 jobs:
   update:
@@ -11,37 +11,35 @@ jobs:
     timeout-minutes: 4
 
     steps:
-      # 1) Checkout using GITHUB_TOKEN for push
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      # Checkout with write-enabled GITHUB_TOKEN
+      - uses: actions/checkout@v3
         with:
-          persist-credentials: true   # this tells checkout to configure git with GITHUB_TOKEN
+          persist-credentials: true
 
-      # 2) Set up Python
-      - name: Setup Python 3.10
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      # 3) Install deps
-      - name: Install dependencies
+      - name: Install deps
         run: pip install requests
 
-      # 4) Generate the CSV
-      - name: Run snapshot_once.py
+      - name: Run snapshot script
         run: python snapshot_once.py
 
-      # 5) Commit & push the CSV if it changed
-      - name: Commit & push agg_snapshot.csv
+      - name: Commit & push CSV
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # configure commit user
-          git config user.name "snapshot-bot"
+          git config user.name  "snapshot-bot"
           git config user.email "bot@example.com"
-          # only commit if there are changes
-          if git diff --quiet; then
-            echo "No changes to commit"
-          else
-            git add agg_snapshot.csv
-            git commit -m "auto snapshot $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-            git push
-          fi
+
+          # Always stage the CSV
+          git add -A agg_snapshot.csv
+
+          # Commit only if there is something new to commit
+          git diff --cached --quiet && echo "No changes" && exit 0
+
+          git commit -m "auto snapshot $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          # Push using the token for auth
+          git push https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git HEAD:main
