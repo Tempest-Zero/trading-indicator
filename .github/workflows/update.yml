@@ -11,33 +11,40 @@ jobs:
     timeout-minutes: 4
 
     steps:
-      # 1) Checkout and enable push with GITHUB_TOKEN
+      # 1) Checkout your repo (no need to persist here)
       - uses: actions/checkout@v4
         with:
-          persist-credentials: true    # ← this line is critical
+          persist-credentials: false
 
       # 2) Setup Python
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      # 3) Install dependencies
+      # 3) Install deps
       - name: Install dependencies
         run: pip install requests
 
-      # 4) Generate the CSV
-      - name: Run snapshot_once.py
+      # 4) Run the snapshot script
+      - name: Generate agg_snapshot.csv
         run: python snapshot_once.py
 
-      # 5) Commit & push if changed
+      # 5) Commit & push using the GITHUB_TOKEN in the URL
       - name: Commit and push CSV
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config --global user.name  "snapshot-bot"
           git config --global user.email "bot@example.com"
+
+          # only commit if the CSV changed
           if git status --porcelain agg_snapshot.csv | grep .; then
             git add agg_snapshot.csv
             git commit -m "auto snapshot $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-            git push
+            # push explicitly with token auth
+            git push \
+              https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git \
+              HEAD:main
           else
             echo "No changes to commit"
           fi
