@@ -1,8 +1,8 @@
 name: snapshot-once
 
 on:
-  workflow_dispatch:    # manual trigger
-  schedule:             # runs every 5 minutes (UTC)
+  workflow_dispatch:
+  schedule:
     - cron: '*/5 * * * *'
 
 jobs:
@@ -11,12 +11,12 @@ jobs:
     timeout-minutes: 4
 
     steps:
-      # 1) Check out the repo and enable push via GITHUB_TOKEN
+      # 1) Checkout and enable push with GITHUB_TOKEN
       - uses: actions/checkout@v4
         with:
-          persist-credentials: true
+          persist-credentials: true    # ← this line is critical
 
-      # 2) Install Python 3.10
+      # 2) Setup Python
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
@@ -25,11 +25,11 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      # 4) Run the snapshot script
-      - name: Generate agg_snapshot.csv
+      # 4) Generate the CSV
+      - name: Run snapshot_once.py
         run: python snapshot_once.py
 
-      # 5) Commit & push CSV if it changed
+      # 5) Commit & push if changed
       - name: Commit and push CSV
         run: |
           git config --global user.name  "snapshot-bot"
