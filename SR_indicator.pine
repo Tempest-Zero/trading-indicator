@@ -1,0 +1,313 @@
+//@version=6
+indicator("Dynamic S/R Zones", overlay=true, max_boxes_count=300, max_labels_count=100)
+
+//─────────────────────────────────── INPUTS ──────────────────────────────────
+pivotLen   = input.int  (5,     "Pivot Length",          minval = 1)
+widthMult  = input.float(0.5,   "Zone Width (ATR mult)", minval = 0.1, maxval = 2.0)
+maxZones   = input.int  (10,    "Max Zones",             minval = 2,   maxval = 20)
+decayRate  = input.float(0.997, "Decay Rate",            minval = 0.9, maxval = 0.999)
+showTable  = input.bool (true,  "Show Table")
+
+//─────────────────────────────── CONSTANTS ───────────────────────────────────
+atr14 = ta.atr(14)   // cached ATR for this bar
+sma50 = ta.sma(close, 50)
+volSMA = ta.sma(volume, 20)
+
+//─────────────────────────────── DATA STRUCT ─────────────────────────────────
+type Zone
+    float center
+    float high
+    float low
+    int   touches      = 0
+    float volume       = 0.0
+    float strength     = 0.0
+    int   age          = 0
+    bool  is_support   = true
+    bool  is_broken    = false
+    bool  is_flipped   = false
+    float volRatio     = 1.0
+    float ciLower      = 0.0
+    box   zoneBox      = na
+    label zoneLabel    = na
+
+//─────────────────────────── STATE VARIABLES ─────────────────────────────────
+var array<Zone> zones      = array.new<Zone>()
+var array<Zone> tempZones  = array.new<Zone>()
+var table infoTable        = table.new(position.top_right, 6, 11)
+
+// table header (one-time)
+if barstate.isfirst and showTable
+    table.cell(infoTable, 0, 0, "Type",      bgcolor = color.new(color.gray, 80))
+    table.cell(infoTable, 1, 0, "Price",     bgcolor = color.new(color.gray, 80))
+    table.cell(infoTable, 2, 0, "Touches",   bgcolor = color.new(color.gray, 80))
+    table.cell(infoTable, 3, 0, "Score",     bgcolor = color.new(color.gray, 80))
+    table.cell(infoTable, 4, 0, "Bounce CI", bgcolor = color.new(color.gray, 80))
+
+//────────────────────────── HELPER FUNCTIONS ────────────────────────────────
+isDarkMode() =>
+    chart.bg_color == color.black or chart.bg_color == #1e222d
+
+getZoneColor(bool isSupport, bool isFlipped) =>
+    isFlipped ? (isSupport ? color.new(color.yellow, 70)
+                           : color.new(color.orange, 70))
+              : (isSupport ? color.new(color.green, 80)
+                           : color.new(color.red,   80))
+
+//────────────────── Merge overlapping zones – returns list to delete ─────────
+mergeZones(array<Zone> arr) =>
+    var array<Zone> toDelete = array.new<Zone>()
+    array.clear(toDelete)
+
+    if array.size(arr) > 1
+        i = 0
+        while i < array.size(arr) - 1
+            z1 = array.get(arr, i)
+            j  = i + 1
+            merged = false
+            while j < array.size(arr)
+                z2 = array.get(arr, j)
+                centerDist = math.abs(z1.center - z2.center)
+                if centerDist <= 0.5 * atr14 and z1.is_support == z2.is_support
+                    // Merge attributes
+                    z1.center   := (z1.center * z1.touches + z2.center * z2.touches) / (z1.touches + z2.touches)
+                    z1.touches  += z2.touches
+                    z1.volume   += z2.volume
+                    z1.age      := math.min(z1.age, z2.age)
+                    z1.strength := math.max(z1.strength, z2.strength)
+                    // mark z2 for later deletion
+                    array.push(toDelete, z2)
+                    array.remove(arr, j)
+                    merged := true
+                else
+                    j += 1
+            if not merged
+                i += 1
+    toDelete
+
+//────────────────────────── BOOTSTRAP CI ─────────────────────────────────────
+calcBootstrapCI(int touches) =>
+    float ci = 0.5
+    if touches >= 3
+        int   blockSize = math.max(1, math.round(1.3 * math.sqrt(touches)))
+        float sum       = 0.0
+        for rep = 0 to 99
+            int bootTouches = 0
+            for b = 0 to touches - 1
+                if math.random() > 0.5
+                    bootTouches += 1
+            sum += bootTouches > touches * 0.5 ? 1 : 0
+        ci := sum / 100
+    ci
+
+//────────────────────────── ZONE STRENGTH ───────────────────────────────────
+calcStrength(Zone z) =>
+    float freshness = math.pow(decayRate, z.age)
+    float volComp   = z.volume / (volSMA * z.touches)
+    float S = 100 * (0.35 * z.touches / 10 +
+                     0.30 * z.volRatio      +
+                     0.20 * volComp         +
+                     0.15 * freshness)
+    float ciL = calcBootstrapCI(z.touches)
+    if z.touches >= 3 and ciL < 0.5
+        S *= 0.5
+    z.strength := S
+    z.ciLower  := ciL
+
+//──────────────────────── DETECT PIVOTS & CREATE ZONES ───────────────────────
+pivotHigh = ta.pivothigh(high, pivotLen, pivotLen)
+pivotLow  = ta.pivotlow (low , pivotLen, pivotLen)
+
+// resistance pivot
+if not na(pivotHigh) and close[pivotLen] < sma50[pivotLen] and volume[pivotLen] >= 1.2 * volSMA[pivotLen]
+    float width = widthMult * atr14[pivotLen]
+    Zone newZ   = Zone.new()
+    newZ.center     := pivotHigh
+    newZ.high       := pivotHigh + width/2
+    newZ.low        := pivotHigh - width/2
+    newZ.touches    := 1
+    newZ.volume     := volume[pivotLen]
+    newZ.is_support := false
+    newZ.volRatio   := volume[pivotLen] / volSMA[pivotLen]
+    array.push(tempZones, newZ)
+    alert("NEW_ZONE: Resistance at " + str.tostring(pivotHigh), alert.freq_once_per_bar)
+
+// support pivot
+if not na(pivotLow) and close[pivotLen] > sma50[pivotLen] and volume[pivotLen] >= 1.2 * volSMA[pivotLen]
+    float width = widthMult * atr14[pivotLen]
+    Zone newZ   = Zone.new()
+    newZ.center     := pivotLow
+    newZ.high       := pivotLow + width/2
+    newZ.low        := pivotLow - width/2
+    newZ.touches    := 1
+    newZ.volume     := volume[pivotLen]
+    newZ.is_support := true
+    newZ.volRatio   := volume[pivotLen] / volSMA[pivotLen]
+    array.push(tempZones, newZ)
+    alert("NEW_ZONE: Support at " + str.tostring(pivotLow), alert.freq_once_per_bar)
+
+//──────────────────────── UPDATE EXISTING ZONES ──────────────────────────────
+if barstate.isconfirmed
+    // age increment
+    for i = 0 to (array.size(zones) == 0 ? na : array.size(zones) - 1)
+        z = array.get(zones, i)
+        z.age += 1
+        array.set(zones, i, z)
+
+    // touches + flips
+    for i = array.size(zones) - 1 to 0
+        if array.size(zones) == 0
+            break
+        z = array.get(zones, i)
+        bool touched = false
+        if z.is_support
+            if low <= z.high and low >= z.low
+                touched := true
+                z.touches += 1
+                z.volume  += volume
+                alert("ZONE_TOUCH: Support at " + str.tostring(z.center), alert.freq_once_per_bar)
+            else if close < z.low
+                z.is_broken := true
+                z.is_flipped := true
+                z.is_support := false
+                z.strength  *= 0.25
+                alert("ZONE_FLIP: Support flipped at " + str.tostring(z.center), alert.freq_once_per_bar)
+        else
+            if high >= z.low and high <= z.high
+                touched := true
+                z.touches += 1
+                z.volume  += volume
+                alert("ZONE_TOUCH: Resistance at " + str.tostring(z.center), alert.freq_once_per_bar)
+            else if close > z.high
+                z.is_broken := true
+                z.is_flipped := true
+                z.is_support := true
+                z.strength  *= 0.25
+                alert("ZONE_FLIP: Resistance flipped at " + str.tostring(z.center), alert.freq_once_per_bar)
+        if touched
+            calcStrength(z)
+
+//──────────────────────── ADD & MERGE TEMP ZONES ─────────────────────────────
+for i = 0 to (array.size(tempZones) == 0 ? na : array.size(tempZones) - 1)
+    array.push(zones, array.get(tempZones, i))
+array.clear(tempZones)
+
+if barstate.isconfirmed
+    array<Zone> zonesToDelete = mergeZones(zones)
+
+    // Cleanup deleted zones
+    for idx = 0 to (array.size(zonesToDelete) == 0 ? na : array.size(zonesToDelete) - 1)
+        z = array.get(zonesToDelete, idx)
+        zoneBox = z.zoneBox
+        zoneLabel = z.zoneLabel
+        if not na(zoneBox)
+            box.delete(zoneBox)
+        if not na(zoneLabel)
+            label.delete(zoneLabel)
+
+//──────────────────────── RECALC STRENGTH & SORT ─────────────────────────────
+if barstate.isconfirmed
+    for i = 0 to (array.size(zones) == 0 ? na : array.size(zones) - 1)
+        calcStrength(array.get(zones, i))
+
+// split support / resistance
+var array<Zone> topSupport    = array.new<Zone>()
+var array<Zone> topResistance = array.new<Zone>()
+
+if barstate.isconfirmed
+    array.clear(topSupport)
+    array.clear(topResistance)
+    for i = 0 to (array.size(zones) == 0 ? na : array.size(zones) - 1)
+        z = array.get(zones, i)
+        if z.is_support
+            array.push(topSupport, z)
+        else
+            array.push(topResistance, z)
+
+    // bubble-sort topSupport by strength
+    if array.size(topSupport) > 1
+        for i = 0 to array.size(topSupport) - 2
+            for j = 0 to array.size(topSupport) - i - 2
+                if array.get(topSupport, j).strength < array.get(topSupport, j + 1).strength
+                    tmp = array.get(topSupport, j)
+                    array.set(topSupport, j, array.get(topSupport, j + 1))
+                    array.set(topSupport, j + 1, tmp)
+
+    // bubble-sort topResistance by strength
+    if array.size(topResistance) > 1
+        for i = 0 to array.size(topResistance) - 2
+            for j = 0 to array.size(topResistance) - i - 2
+                if array.get(topResistance, j).strength < array.get(topResistance, j + 1).strength
+                    tmp = array.get(topResistance, j)
+                    array.set(topResistance, j, array.get(topResistance, j + 1))
+                    array.set(topResistance, j + 1, tmp)
+
+    // cap at 5 zones each side
+    while array.size(topSupport) > 5
+        lastZone = array.pop(topSupport)
+        if not na(lastZone.zoneBox)
+            box.delete(lastZone.zoneBox)
+    while array.size(topResistance) > 5
+        lastZone = array.pop(topResistance)
+        if not na(lastZone.zoneBox)
+            box.delete(lastZone.zoneBox)
+
+//──────────────────────── DRAW ZONES ─────────────────────────────────────────
+if barstate.isconfirmed
+    // support
+    for i = 0 to (array.size(topSupport) == 0 ? na : math.min(4, array.size(topSupport) - 1))
+        z = array.get(topSupport, i)
+        if not na(z.zoneBox)
+            box.delete(z.zoneBox)
+        if not na(z.zoneLabel)
+            label.delete(z.zoneLabel)
+        z.zoneBox := box.new(bar_index - 100, z.high, bar_index + 50, z.low,
+                             bgcolor = getZoneColor(true, z.is_flipped),
+                             border_color = na)
+        string lbl = (z.is_flipped ? "⇄ " : "S ") + str.tostring(z.center, "#.#####") +
+                     " | t" + str.tostring(z.touches) +
+                     " | S " + str.tostring(math.round(z.strength))
+        z.zoneLabel := label.new(bar_index + 20, z.center, lbl,
+                                 color = color.new(color.white, 100),
+                                 textcolor = isDarkMode() ? color.white : color.black,
+                                 style = label.style_label_left, size = size.small)
+        array.set(topSupport, i, z)
+    // resistance
+    for i = 0 to (array.size(topResistance) == 0 ? na : math.min(4, array.size(topResistance) - 1))
+        z = array.get(topResistance, i)
+        if not na(z.zoneBox)
+            box.delete(z.zoneBox)
+        if not na(z.zoneLabel)
+            label.delete(z.zoneLabel)
+        z.zoneBox := box.new(bar_index - 100, z.high, bar_index + 50, z.low,
+                             bgcolor = getZoneColor(false, z.is_flipped),
+                             border_color = na)
+        string lbl = (z.is_flipped ? "⇄ " : "R ") + str.tostring(z.center, "#.#####") +
+                     " | t" + str.tostring(z.touches) +
+                     " | S " + str.tostring(math.round(z.strength))
+        z.zoneLabel := label.new(bar_index + 20, z.center, lbl,
+                                 color = color.new(color.white, 100),
+                                 textcolor = isDarkMode() ? color.white : color.black,
+                                 style = label.style_label_left, size = size.small)
+        array.set(topResistance, i, z)
+
+//──────────────────────── UPDATE TABLE ───────────────────────────────────────
+if showTable and barstate.isconfirmed
+    int row = 1
+    // support rows
+    for i = 0 to (array.size(topSupport) == 0 ? na : math.min(4, array.size(topSupport) - 1))
+        z = array.get(topSupport, i)
+        table.cell(infoTable, 0, row, "Support",    text_color = color.green)
+        table.cell(infoTable, 1, row, str.tostring(z.center, "#.#####"))
+        table.cell(infoTable, 2, row, str.tostring(z.touches))
+        table.cell(infoTable, 3, row, str.tostring(math.round(z.strength)))
+        table.cell(infoTable, 4, row, str.tostring(z.ciLower, "#.##"))
+        row += 1
+    // resistance rows
+    for i = 0 to (array.size(topResistance) == 0 ? na : math.min(4, array.size(topResistance) - 1))
+        z = array.get(topResistance, i)
+        table.cell(infoTable, 0, row, "Resistance", text_color = color.red)
+        table.cell(infoTable, 1, row, str.tostring(z.center, "#.#####"))
+        table.cell(infoTable, 2, row, str.tostring(z.touches))
+        table.cell(infoTable, 3, row, str.tostring(math.round(z.strength)))
+        table.cell(infoTable, 4, row, str.tostring(z.ciLower, "#.##"))
+        row += 1
