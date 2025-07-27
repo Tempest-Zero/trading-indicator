@@ -29,24 +29,43 @@ def load_old_snapshot():
     return old
 
 def fetch_binance(sym):
-    r = requests.get(BINANCE_MIRROR,
-                     params={"symbol": sym, "limit": DEPTH_LIMIT},
-                     timeout=TIMEOUT)
-    r.raise_for_status()
-    return r.json()
+    try:
+        r = requests.get(BINANCE_MIRROR,
+                         params={"symbol": sym, "limit": DEPTH_LIMIT},
+                         timeout=TIMEOUT)
+        r.raise_for_status()
+        return r.json()
+    except requests.exceptions.RequestException as e:
+        print(f"⚠️  Binance API error for {sym}: {e}", file=sys.stderr)
+        return None
 
 def fetch_kraken(sym):
-    base = sym[:-4]
-    pair = "XBTUSD" if base == "BTC" else f"{base}USD"
-    r = requests.get(KRAKEN_URL,
-                     params={"pair": pair, "count": DEPTH_LIMIT},
-                     timeout=TIMEOUT)
-    r.raise_for_status()
-    js = r.json().get("result", {})
-    data = js.get(pair) or js.get(f"X{base}ZUSD")
-    if data and "bids" in data:
-        return {"bids": data["bids"], "asks": data["asks"]}
-    return None
+    # Better symbol mapping for Kraken
+    symbol_map = {
+        "BTCUSDT": "XBTUSD",
+        "ETHUSDT": "ETHUSD", 
+        "LTCUSDT": "LTCUSD",
+        "XRPUSDT": "XRPUSD"
+    }
+    pair = symbol_map.get(sym, sym[:-4] + "USD")
+    
+    try:
+        r = requests.get(KRAKEN_URL,
+                         params={"pair": pair, "count": DEPTH_LIMIT},
+                         timeout=TIMEOUT)
+        r.raise_for_status()
+        js = r.json().get("result", {})
+        
+        # Try multiple possible pair names that Kraken might return
+        possible_pairs = [pair, f"X{pair}", pair.replace("USD", "ZUSD")]
+        for p in possible_pairs:
+            data = js.get(p)
+            if data and "bids" in data and "asks" in data:
+                return {"bids": data["bids"], "asks": data["asks"]}
+        return None
+    except requests.exceptions.RequestException as e:
+        print(f"⚠️  Kraken API error for {sym}: {e}", file=sys.stderr)
+        return None
 
 def get_orderbook(sym):
     for fn in (fetch_binance, fetch_kraken):
@@ -61,36 +80,57 @@ def get_orderbook(sym):
 
 def bucketize(ob, sym):
     """Aggregate bids/asks into {bucket_price: [buyQty, sellQty]}."""
-    # Determine bucket size (fallback if missing)
-    size = BIN_SIZE.get(sym, max(0.001, float(ob["bids"][0][0]) * 0.002))
+    # Determine bucket size with better fallback logic
+    size = BIN_SIZE.get(sym)
+    if not size:
+        # Fallback: use 0.1% of current price as bucket size
+        try:
+            current_price = float(ob["bids"][0][0]) if ob["bids"] else float(ob["asks"][0][0])
+            size = max(0.01, current_price * 0.001)  # At least 1 cent, max 0.1% of price
+        except (IndexError, ValueError, TypeError):
+            size = 1.0  # Default fallback
+    
     buckets = {}
     for side in ("bids", "asks"):
         for entry in ob.get(side, []):
-            # Safely grab the first two elements
-            p = float(entry[0])
-            q = float(entry[1])
-            key = round(p / size) * size
-            buy, sell = buckets.setdefault(key, [0.0, 0.0])
-            if side == "bids":
-                buckets[key][0] = buy + q
-            else:
-                buckets[key][1] = sell + q
+            try:
+                # Safely grab the first two elements with validation
+                p = float(entry[0])
+                q = float(entry[1])
+                
+                # Validate data ranges
+                if p <= 0 or q <= 0:
+                    continue
+                if p > 1000000 or q > 1000000:  # Reasonable limits
+                    continue
+                    
+                key = round(p / size) * size
+                buy, sell = buckets.setdefault(key, [0.0, 0.0])
+                if side == "bids":
+                    buckets[key][0] = buy + q
+                else:
+                    buckets[key][1] = sell + q
+            except (ValueError, TypeError, IndexError):
+                continue  # Skip invalid entries
     return buckets
 
 def main():
     old_data = load_old_snapshot()
     rows     = [["symbol","price","buy_qty","sell_qty"]]
     any_success = False
+    any_data = False  # Track if we have any data at all
 
     for sym in PAIRS:
         ob = get_orderbook(sym)
         if ob:
             buckets = bucketize(ob, sym)
             any_success = True
+            any_data = True
         else:
             buckets = old_data.get(sym, {})
             if buckets:
                 print(f"ℹ️  Using last snapshot for {sym}", file=sys.stderr)
+                any_data = True
             else:
                 print(f"❌ No data for {sym}, skipping", file=sys.stderr)
 
@@ -98,14 +138,15 @@ def main():
             buy, sell = buckets[price]
             rows.append([sym, price, round(buy,2), round(sell,2)])
 
-    if not any_success:
-        print("❌ All symbols failed — no CSV written.", file=sys.stderr)
+    if not any_data:
+        print("❌ No data available — no CSV written.", file=sys.stderr)
         sys.exit(1)
 
     with open(OUTFILE, "w", newline="") as f:
         csv.writer(f).writerows(rows)
 
-    print(f"✔ Wrote {OUTFILE} with {len(rows)-1} rows at",
+    status_msg = "✔ Updated" if any_success else "✔ Reused existing data for"
+    print(f"{status_msg} {OUTFILE} with {len(rows)-1} rows at",
           time.strftime("%Y-%m-%d %H:%M:%S"), "UTC")
 
 if __name__ == "__main__":
