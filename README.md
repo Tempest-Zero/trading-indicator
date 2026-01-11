@@ -138,6 +138,60 @@ Endpoints:
 - `GET /api/v1/symbols` - Available symbols
 - `WS /ws/{client_id}` - Real-time updates
 
+## Web Frontend (Next.js)
+
+A modern React dashboard with real-time updates.
+
+### Features
+
+- Professional candlestick charts with TradingView Lightweight Charts
+- Kalman filter overlay on price chart
+- Regime card with Hurst value and gauge
+- Z-Score indicator with colored histogram
+- Volume delta chart
+- Action panel with bias and probabilities
+- Key levels (POC, Value Area)
+- Trend card with velocity
+- Symbol selector with search
+- Timeframe selector (1m, 5m, 15m, 1H, 4H, 1D)
+- Watchlist sidebar with live updates
+- Real-time WebSocket updates
+- Connection status indicator
+- Dark mode UI
+
+### Quick Start
+
+```bash
+# Navigate to frontend directory
+cd frontend
+
+# Install dependencies
+npm install
+
+# Start development server
+npm run dev
+```
+
+Then open http://localhost:3000 in your browser.
+
+### Stack
+
+- **Next.js 14** - React framework with App Router
+- **TailwindCSS** - Utility-first styling
+- **TanStack Query** - Data fetching with caching
+- **Zustand** - State management
+- **Lightweight Charts** - Professional charting
+- **Lucide React** - Icons
+
+### Environment Variables
+
+Create a `.env.local` file in the `frontend` directory:
+
+```env
+NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_WS_URL=ws://localhost:8000
+```
+
 ## Requirements
 
 - Python 3.8+
