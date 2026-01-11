@@ -215,11 +215,18 @@ async def root():
     }
 
 
+@app.get("/api/v1/health")
+async def health_check():
+    """Health check endpoint."""
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+
 @app.get("/api/v1/analyze/{symbol}", response_model=AnalysisResponse)
 async def analyze_symbol(
     symbol: str,
-    timeframe: str = Query("1h", regex="^(1m|5m|15m|1h|4h|1d)$"),
+    timeframe: str = Query("1h", pattern="^(1m|5m|15m|1h|4h|1d)$"),
     limit: int = Query(500, ge=100, le=2000),
+    demo: bool = Query(False, description="Use sample data instead of fetching"),
 ):
     """
     Full analysis for a symbol.
@@ -228,7 +235,11 @@ async def analyze_symbol(
     key levels, and actionable probabilities.
     """
     try:
-        ohlcv = fetcher.get_ohlcv(symbol, timeframe, limit)
+        if demo or symbol.upper() == "DEMO":
+            ohlcv = generate_sample_data(n_bars=limit, seed=42)
+            symbol = "DEMO"
+        else:
+            ohlcv = fetcher.get_ohlcv(symbol, timeframe, limit)
         conditions = engine.analyze(ohlcv, symbol=symbol)
         return conditions_to_response(conditions)
     except Exception as e:
@@ -251,14 +262,19 @@ async def demo_analysis():
 @app.get("/api/v1/chart-data/{symbol}", response_model=ChartDataResponse)
 async def get_chart_data(
     symbol: str,
-    timeframe: str = Query("1h", regex="^(1m|5m|15m|1h|4h|1d)$"),
+    timeframe: str = Query("1h", pattern="^(1m|5m|15m|1h|4h|1d)$"),
     limit: int = Query(500, ge=100, le=2000),
+    demo: bool = Query(False, description="Use sample data instead of fetching"),
 ):
     """
     Get OHLCV data with indicator overlays for charting.
     """
     try:
-        ohlcv = fetcher.get_ohlcv(symbol, timeframe, limit)
+        if demo or symbol.upper() == "DEMO":
+            ohlcv = generate_sample_data(n_bars=limit, seed=42)
+            symbol = "DEMO"
+        else:
+            ohlcv = fetcher.get_ohlcv(symbol, timeframe, limit)
         prices = ohlcv['close'].values
 
         from quant_engine.core.kalman import kalman_smooth
